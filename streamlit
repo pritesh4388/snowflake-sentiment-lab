@@ -1,1 +1,176 @@
+import streamlit as st
+import altair as alt
+from snowflake.snowpark.context import get_active_session
 
+session = get_active_session()
+
+st.set_page_config(layout="wide")
+st.title("Customer Sentiment Dashboard")
+st.caption("Powered by Snowflake Cortex AI · Amazon Best Sellers Reviews")
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def load_summary():
+    return session.sql("""
+        SELECT sentiment_label,
+               COUNT(*)                       AS count,
+               ROUND(AVG(sentiment_score), 3) AS avg_score
+        FROM sentiment_lab.analytics.review_sentiment
+        GROUP BY sentiment_label
+    """).to_pandas()
+
+@st.cache_data(ttl=3600)
+def load_recent():
+    return session.sql("""
+        SELECT sentiment_label,
+               sentiment_score,
+               LEFT(BODY, 120) AS preview,
+               scored_at
+        FROM sentiment_lab.analytics.review_sentiment
+        ORDER BY scored_at DESC
+        LIMIT 20
+    """).to_pandas()
+
+@st.cache_data(ttl=3600)
+def load_score_distribution():
+    return session.sql("""
+        SELECT ROUND(sentiment_score, 1) AS score_bucket,
+               COUNT(*) AS count,
+               CASE
+                   WHEN ROUND(sentiment_score, 1) >  0.3 THEN 'POSITIVE'
+                   WHEN ROUND(sentiment_score, 1) < -0.3 THEN 'NEGATIVE'
+                   ELSE 'NEUTRAL'
+               END AS bucket_label
+        FROM sentiment_lab.analytics.review_sentiment
+        GROUP BY score_bucket, bucket_label
+        ORDER BY score_bucket
+    """).to_pandas()
+
+df       = load_summary()
+df_rec   = load_recent()
+df_dist  = load_score_distribution()
+
+total  = int(df["COUNT"].sum())
+avg_sc = round((df["COUNT"] * df["AVG_SCORE"]).sum() / total, 3)
+
+label_map = {"POSITIVE": 0, "NEUTRAL": 0, "NEGATIVE": 0}
+for _, r in df.iterrows():
+    label_map[r["SENTIMENT_LABEL"]] = int(r["COUNT"])
+
+# ── KPI Cards ─────────────────────────────────────────────────────────────────
+
+def kpi(col, label, value, delta=None, color="#1D9E75"):
+    col.markdown(f"""
+    <div style="background:{color}18;border:1px solid {color}44;
+                border-radius:10px;padding:16px 20px;">
+        <p style="margin:0;font-size:12px;color:#666;font-weight:500;
+                  text-transform:uppercase;letter-spacing:0.05em">{label}</p>
+        <p style="margin:4px 0 0;font-size:28px;font-weight:600;color:{color}">{value}</p>
+        {f'<p style="margin:4px 0 0;font-size:12px;color:#888">{delta}</p>' if delta else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+c1, c2, c3, c4 = st.columns(4)
+kpi(c1, "Total reviews",  f"{total:,}",                                        color="#534AB7")
+kpi(c2, "Positive",       f"{label_map['POSITIVE']:,}",
+    f"{round(label_map['POSITIVE']*100/total,1)}% of total",                   color="#1D9E75")
+kpi(c3, "Negative",       f"{label_map['NEGATIVE']:,}",
+    f"{round(label_map['NEGATIVE']*100/total,1)}% of total",                   color="#E24B4A")
+kpi(c4, "Avg Cortex score", avg_sc,
+    "Scale: -1.0 (worst) → +1.0 (best)",                                       color="#BA7517")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── Charts ────────────────────────────────────────────────────────────────────
+
+color_scale = alt.Scale(
+    domain=["POSITIVE", "NEUTRAL", "NEGATIVE"],
+    range=["#1D9E75",  "#B4B2A9",  "#E24B4A"]
+)
+
+col_bar, col_donut = st.columns([3, 2])
+
+with col_bar:
+    st.subheader("Volume by sentiment")
+    bar = (
+        alt.Chart(df)
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+        .encode(
+            x=alt.X("SENTIMENT_LABEL:N", title=None,
+                    sort=["POSITIVE", "NEUTRAL", "NEGATIVE"]),
+            y=alt.Y("COUNT:Q", title="Reviews"),
+            color=alt.Color("SENTIMENT_LABEL:N", scale=color_scale, legend=None),
+            tooltip=["SENTIMENT_LABEL", "COUNT", "AVG_SCORE"]
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(bar, use_container_width=True)
+
+with col_donut:
+    st.subheader("Score split")
+    pie = (
+        alt.Chart(df)
+        .mark_arc(innerRadius=55, outerRadius=100)
+        .encode(
+            theta=alt.Theta("COUNT:Q"),
+            color=alt.Color("SENTIMENT_LABEL:N",
+                            scale=color_scale,
+                            legend=alt.Legend(orient="bottom")),
+            tooltip=["SENTIMENT_LABEL", "COUNT"]
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(pie, use_container_width=True)
+
+# ── Score Distribution Histogram ──────────────────────────────────────────────
+
+st.subheader("Cortex score distribution (-1.0 → +1.0)")
+hist = (
+    alt.Chart(df_dist)
+    .mark_bar()
+    .encode(
+        x=alt.X("SCORE_BUCKET:Q", title="Sentiment score",
+                scale=alt.Scale(domain=[-1, 1])),
+        y=alt.Y("COUNT:Q", title="Reviews"),
+        color=alt.Color("BUCKET_LABEL:N", scale=color_scale, legend=None),
+        tooltip=["SCORE_BUCKET", "COUNT", "BUCKET_LABEL"]
+    )
+    .properties(height=200)
+)
+st.altair_chart(hist, use_container_width=True)
+
+# ── Recent Reviews Feed ───────────────────────────────────────────────────────
+
+st.subheader("Sample reviews — scored by Cortex")
+
+pill_style = {
+    "POSITIVE": ("background:#EAF3DE;color:#27500A", "Positive"),
+    "NEGATIVE": ("background:#FCEBEB;color:#791F1F", "Negative"),
+    "NEUTRAL":  ("background:#F1EFE8;color:#444441", "Neutral"),
+}
+
+filter_col, _ = st.columns([2, 4])
+with filter_col:
+    selected = st.multiselect(
+        "Filter by sentiment",
+        options=["POSITIVE", "NEUTRAL", "NEGATIVE"],
+        default=["POSITIVE", "NEUTRAL", "NEGATIVE"]
+    )
+
+filtered = df_rec[df_rec["SENTIMENT_LABEL"].isin(selected)]
+
+for _, row in filtered.iterrows():
+    style, label = pill_style.get(
+        row["SENTIMENT_LABEL"], ("background:#eee;color:#333", row["SENTIMENT_LABEL"])
+    )
+    score = round(float(row["SENTIMENT_SCORE"]), 2)
+    st.markdown(f"""
+    <div style="display:flex;align-items:flex-start;gap:12px;
+                padding:10px 0;border-bottom:0.5px solid #e5e5e5;">
+        <span style="{style};font-size:11px;font-weight:500;padding:3px 10px;
+                      border-radius:20px;white-space:nowrap;margin-top:2px">{label}</span>
+        <span style="font-size:13px;flex:1;color:#333;line-height:1.5">{row['PREVIEW']}…</span>
+        <span style="font-size:12px;color:#888;flex-shrink:0;margin-top:2px">{score:+.2f}</span>
+    </div>
+    """, unsafe_allow_html=True)
