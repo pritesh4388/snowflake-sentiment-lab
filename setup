@@ -1,1 +1,57 @@
 
+-- One-time setup USE ROLE sysadmin;
+CREATE DATABASE IF NOT EXISTS sentiment_lab;
+CREATE SCHEMA IF NOT EXISTS sentiment_lab.analytics;
+
+-- Small warehouse is enough for this lab
+CREATE WAREHOUSE IF NOT EXISTS sentiment_wh WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE;
+USE WAREHOUSE sentiment_wh;
+USE DATABASE sentiment_lab;
+
+-- See what tables are available
+SHOW TABLES IN DATABASE AMAZON_BEST_SELLERS_RATINGS_AND_REVIEWS;
+
+-- Peek at the shape — find your review text column
+SELECT
+    *
+FROM
+    AMAZON_BEST_SELLERS_RATINGS_AND_REVIEWS.public.reviews
+LIMIT
+    10;
+
+-- Count rows to understand scale
+SELECT
+    COUNT(*) AS total_reviews
+FROM
+    AMAZON_BEST_SELLERS_RATINGS_AND_REVIEWS.public.reviews;
+-- Quick sanity check on text length
+SELECT
+    MIN(LENGTH(BODY)) AS min_len,
+    AVG(LENGTH(BODY)) AS avg_len,
+    MAX(LENGTH(BODY)) AS max_len
+FROM
+    AMAZON_BEST_SELLERS_RATINGS_AND_REVIEWS.public.reviews;
+-- Test first on a small sample (recommended)
+SELECT
+    ID,
+    LEFT(BODY, 100) AS preview,
+    SNOWFLAKE.CORTEX.SENTIMENT(BODY) AS score
+FROM
+    AMAZON_BEST_SELLERS_RATINGS_AND_REVIEWS.public.reviews
+LIMIT
+    10;
+
+-- Note: I did have marketplace shared data so could not create dynamic table.
+CREATE OR REPLACE TABLE sentiment_lab.analytics.review_sentiment AS
+SELECT
+    ID,
+    BODY,
+    SNOWFLAKE.CORTEX.SENTIMENT(BODY) AS sentiment_score,
+    CASE
+        WHEN SNOWFLAKE.CORTEX.SENTIMENT(BODY) > 0.3 THEN 'POSITIVE'
+        WHEN SNOWFLAKE.CORTEX.SENTIMENT(BODY) < -0.3 THEN 'NEGATIVE'
+        ELSE 'NEUTRAL'
+    END AS sentiment_label,
+    CURRENT_TIMESTAMP() AS scored_at
+FROM
+    AMAZON_BEST_SELLERS_RATINGS_AND_REVIEWS.public.reviews;
