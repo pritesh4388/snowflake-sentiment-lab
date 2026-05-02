@@ -1,1 +1,33 @@
 
+# Snowflake Cortex Sentiment — Project Notes
+
+## What this is
+Point-in-time sentiment scoring of Amazon Best Sellers reviews
+using Snowflake Cortex AI. No Python ML. No external tools. Pure SQL + Streamlit.
+
+## Stack
+- Source: Amazon Best Sellers dataset (Snowflake Marketplace)
+- Scoring: SNOWFLAKE.CORTEX.SENTIMENT(BODY)
+- Storage: Static CTAS table — sentiment_lab.analytics.review_sentiment
+- Dashboard: Streamlit in Snowflake (SiS)
+- Charts: Altair
+
+## Why Dynamic Table not used
+Marketplace listings = read-only. Can't set as DT source.
+Workaround: CTAS snapshot. Re-run to refresh.
+
+## Next ideas
+- [ ] Schedule CTAS refresh via Snowflake Task
+- [ ] Add CORTEX.SUMMARIZE() for negative review grouping
+- [ ] Swap to Dynamic Table once data lands in own schema
+- [ ] Add product category breakdown if column available
+- [ ] Cortex score vs star rating validation
+
+## Cortex thresholds used
+> +0.3 = POSITIVE
+< -0.3 = NEGATIVE
+else   = NEUTRAL
+
+## Lessons learned
+- Altair v6 no nested alt.condition() — push colour logic to SQL
+- Dynamic Tables need owned tables, not marketplace shares
